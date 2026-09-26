@@ -406,8 +406,10 @@ module.exports = async (req, res) => {
       let horsesInRace = 0;
       let oddsInRace = 0;
 
+      const isRealRunner = r => r.status !== 'Scratched' && !r.standbyNo && /^\d+$/.test(String(r.no || '').trim());
+
       const currentHorseNumbers = runners
-        .filter(r => r.status !== 'Scratched' && !r.standbyNo)
+        .filter(isRealRunner)
         .map(r => parseInt(r.no, 10));
 
       // 攞返呢場真正嘅即時獨贏賠率(唔用 runner.winOdds,嗰個唔準確)
@@ -418,8 +420,8 @@ module.exports = async (req, res) => {
         // 攞賠率失敗都唔緊要,馬匹資料照樣存,遲啲下次 run 再補
       }
 
-      for (const runner of runners) {
-        if (runner.status === 'Scratched' || runner.standbyNo) continue;
+        for (const runner of runners) {
+        if (!isRealRunner(runner)) continue;
 
         const horseNumber = parseInt(runner.no, 10);
         const avgPlacing = calcAvgPlacing(runner.last6run);
@@ -476,7 +478,9 @@ module.exports = async (req, res) => {
           .from('horse_analysis')
           .delete()
           .eq('race_id', raceId)
-          .not('horse_number', 'in', `(${currentHorseNumbers.join(',')})`);
+          .not('horse_number', 'in', `(${currentHorseNumbers.join(',')})`)
+          .is('horse_number', null);
+       
       }
 
       raceSummaries.push({
