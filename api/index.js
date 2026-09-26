@@ -1,10 +1,18 @@
 /**
- * 正式版 v2 —— 放喺 api/index.js
+ * 正式版 v3 —— 放喺 api/index.js
  *
- * 重要: HKJC 個 GraphQL endpoint 有白名單校驗,query 結構必須同官方前端
- * 用緊嗰條完全一致(包括我哋用唔著嘅欄位都唔可以刪),否則會俾佢
- * 用 WHITELIST_ERROR 拒絕。所以下面呢條 query 保持原汁原味,一個字都冇改,
- * 淨係將 $date / $venueCode 呢兩個變數換做我哋要嘅日期/場地。
+ * 關鍵發現: HKJC 個 GraphQL 嘅「詳細版」raceMeetings(date, venueCode) resolver
+ * 唔會真正跟返我哋俾嘅 $date / $venueCode 篩選,佢會盲目返返「而家進行緊」嗰場
+ * (例如海外轉播場),完全唔理我哋想要嘅係咪本地場。
+ *
+ * 但係「精簡版」activeMeetings(冇參數嗰個 field)就好可靠,會列晒所有現正
+ * 生效嘅賽事(包括未開跑嘅),每個都帶埋真實嘅 date/venueCode。
+ *
+ * 所以做法分兩步:
+ * 1. 攞 activeMeetings,喺入面搵返真正本地場(venueCode 係 ST 或 HV)嘅精確日期
+ * 2. 用返嗰個精確日期再問一次「詳細版」,先至攞到有齊馬匹嘅完整資料
+ * 3. 攞到之後仲會再核對一次 meeting.venueCode/meeting.date 係咪真係啱,
+ *    唔啱就即刻停,唔會將錯誤場數據存落 Supabase
  */
 
 const { createClient } = require('@supabase/supabase-js');
@@ -193,6 +201,7 @@ query raceMeetings($date: String, $venueCode: String) {
 }`;
 
 const VENUE_NAME = { ST: '沙田', HV: '跑馬地' };
+const LOCAL_VENUES = ['ST', 'HV'];
 
 function getHKDateInfo() {
   const now = new Date();
@@ -201,13 +210,7 @@ function getHKDateInfo() {
   const yyyy = hk.getUTCFullYear();
   const mm = String(hk.getUTCMonth() + 1).padStart(2, '0');
   const dd = String(hk.getUTCDate()).padStart(2, '0');
-  return { dateStr: `${yyyy}-${mm}-${dd}`, weekday: hk.getUTCDay() };
-}
-
-function guessVenueCode(weekday) {
-  if (weekday === 3) return 'HV';
-  if (weekday === 6 || weekday === 0) return 'ST';
-  return null;
+  return { dateStr: `${yyyy}-${mm}-${dd}` };
 }
 
 async function callHkjcGraphQL(query, variables) {
@@ -248,57 +251,64 @@ function parseWinOdds(winOdds) {
 
 module.exports = async (req, res) => {
   try {
-    const { dateStr, weekday } = getHKDateInfo();
-    const venueCode = guessVenueCode(weekday);
+    const { dateStr } = getHKDateInfo();
 
-    if (!venueCode) {
-      res.status(200).json({ status: 'skipped', message: `今日(${dateStr})唔係本地賽馬日`, weekday });
+    // ===== 第 1 步: 用 activeMeetings 搵返真正本地場(ST/HV)嘅精確日期 =====
+    const probeResult = await callHkjcGraphQL(horseQuery, { date: dateStr, venueCode: 'ST' });
+
+    if (probeResult.errors) {
+      res.status(200).json({
+        status: 'graphql_error',
+        message: 'HKJC GraphQL 拒絕咗個 query',
+        errors: probeResult.errors
+      });
       return;
     }
 
-    const gqlResult = await callHkjcGraphQL(horseQuery, { date: dateStr, venueCode });
+    const activeMeetings = (probeResult.data && probeResult.data.activeMeetings) || [];
+    const localMeetingSummary = activeMeetings.find(m => LOCAL_VENUES.includes(m.venueCode));
+
+    if (!localMeetingSummary) {
+      res.status(200).json({
+        status: 'no_local_meeting_active',
+        message: '而家冇本地(沙田/跑馬地)賽事生效緊',
+        active_meetings_summary: activeMeetings
+      });
+      return;
+    }
+
+    const targetDate = localMeetingSummary.date;
+    const targetVenue = localMeetingSummary.venueCode;
+
+    // ===== 第 2 步: 用返啱啱搵到嘅精確日期,再問一次攞詳細資料 =====
+    const gqlResult = await callHkjcGraphQL(horseQuery, { date: targetDate, venueCode: targetVenue });
 
     if (gqlResult.errors) {
       res.status(200).json({
         status: 'graphql_error',
-        message: 'HKJC GraphQL 拒絕咗個 query,或者呢個日期/場地冇資料',
-        queried_date: dateStr, queried_venue: venueCode, errors: gqlResult.errors
+        message: '第二次查詢(攞詳細資料)被拒絕',
+        target_date: targetDate, target_venue: targetVenue, errors: gqlResult.errors
       });
       return;
     }
 
     const meeting = gqlResult.data && gqlResult.data.raceMeetings && gqlResult.data.raceMeetings[0];
-    if (!meeting) {
-      res.status(200).json({
-        status: 'no_meeting_found',
-        message: `喺 ${dateStr} 揾唔到 ${venueCode} 場嘅賽事`,
-        queried_date: dateStr, queried_venue: venueCode,
-        active_meetings_summary: gqlResult.data ? gqlResult.data.activeMeetings : null
-      });
-      return;
-    }
-        // ⚠️ 嚴格驗證: HKJC 個 GraphQL 未必會跟返我哋要求嘅 venueCode 篩選,
-    // 見過佢會將其他場(例如海外轉播場)都塞返嚟。所以呢度必須核對
-    // meeting.venueCode 係咪真係我哋想要嘅 ST/HV,唔啱就即刻停,
-    // 唔會將錯誤場數據誤存做「沙田」或「跑馬地」。
-    if (meeting.venueCode !== venueCode) {
+
+    if (!meeting || meeting.venueCode !== targetVenue || meeting.date !== targetDate) {
       res.status(200).json({
         status: 'venue_mismatch',
-        message: `攞返嚟嘅場地(${meeting.venueCode})同要求嘅(${venueCode})唔一致,已停止寫入,避免存錯數據`,
-        queried_date: dateStr,
-        queried_venue: venueCode,
-        actual_returned_venue: meeting.venueCode,
-        actual_returned_date: meeting.date,
-        active_meetings_summary: gqlResult.data ? gqlResult.data.activeMeetings : null
+        message: '第二次查詢仍然攞唔到啱嘅場地/日期,已停止寫入,避免存錯數據',
+        target_date: targetDate,
+        target_venue: targetVenue,
+        actual_returned_venue: meeting ? meeting.venueCode : null,
+        actual_returned_date: meeting ? meeting.date : null
       });
       return;
     }
+
     const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
     const venueName = VENUE_NAME[meeting.venueCode] || meeting.venueCode;
-    // ⚠️ 用返 HKJC 真正回應嘅日期嚟標籤數據,唔可以靠自己估嘅 dateStr,
-    // 因為 HKJC 個 GraphQL 未必會嚴格跟我哋俾嘅 $date 篩選,佢可能會
-    // 直接返返個場地下一場真正嘅賽事(即使日期同我哋以為嘅唔一樣)。
-    const actualDate = meeting.date || dateStr;
+    const actualDate = meeting.date;
 
     const raceSummaries = [];
     let totalHorsesUpserted = 0;
@@ -390,21 +400,21 @@ module.exports = async (req, res) => {
       raceSummaries.push({
         race_number: race.no,
         status: 'processed',
+        distance: race.distance,
         horses: horsesInRace,
         odds_available: oddsInRace,
         odds_pending: horsesInRace - oddsInRace
       });
     }
 
-      res.status(200).json({
+    res.status(200).json({
       status: 'success',
       message: `已處理 ${actualDate} ${venueName} 場`,
-      queried_date: dateStr,
       actual_meeting_date: actualDate,
-      date_mismatch_warning: actualDate !== dateStr
-        ? `注意: 你查詢嘅係 ${dateStr},但 HKJC 實際返返嚟嘅係 ${actualDate} 嗰場`
-        : null,
-      queried_venue: venueName,
+      actual_venue: venueName,
+      total_horses_upserted: totalHorsesUpserted,
+      total_odds_upserted: totalOddsUpserted,
+      races: raceSummaries
     });
 
   } catch (err) {
