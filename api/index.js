@@ -377,11 +377,17 @@ module.exports = async (req, res) => {
     // 騎師/練馬師分數同場地有關、同途程無關,喺 race loop 外面攞一次就夠,唔使每場重問
     const jockeyScoreMap = new Map();
     const trainerScoreMap = new Map();
+    let jockeyStatsDebug = { count: 0, error: null };
+    let trainerStatsDebug = { count: 0, error: null };
     try {
-      const [{ data: jockeyStats }, { data: trainerStats }] = await Promise.all([
+      const [jockeyResult, trainerResult] = await Promise.all([
         supabase.from('stat_jockey_venue').select('jockey,win_pct').eq('venue', venueName),
         supabase.from('stat_trainer_venue').select('trainer,win_pct').eq('venue', venueName)
       ]);
+      const jockeyStats = jockeyResult.data;
+      const trainerStats = trainerResult.data;
+      jockeyStatsDebug = { count: jockeyStats ? jockeyStats.length : 0, error: jockeyResult.error ? jockeyResult.error.message : null };
+      trainerStatsDebug = { count: trainerStats ? trainerStats.length : 0, error: trainerResult.error ? trainerResult.error.message : null };
 
       if (jockeyStats && jockeyStats.length > 1) {
         const pcts = jockeyStats.map(j => j.win_pct);
@@ -400,7 +406,7 @@ module.exports = async (req, res) => {
         }
       }
     } catch (e) {
-      // 攞唔到就下面 fallback 中性值 5
+      jockeyStatsDebug.error = e.message;
     }
 
     for (const race of meeting.races || []) {
@@ -568,6 +574,8 @@ module.exports = async (req, res) => {
       actual_venue: venueName,
       total_horses_upserted: totalHorsesUpserted,
       total_odds_upserted: totalOddsUpserted,
+      jockey_stats_debug: jockeyStatsDebug,
+      trainer_stats_debug: trainerStatsDebug,
       races: raceSummaries
     });
 
