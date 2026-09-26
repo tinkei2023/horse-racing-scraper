@@ -1,0 +1,15 @@
+name: HKJC Racing Auto Scraper
+
+on:
+  schedule:
+    # 逢星期三/六/日,香港時間 08:00–19:00(即 UTC 00:00–11:00),每 30 分鐘 call 一次
+    - cron: '*/30 0-11 * * 0,3,6'
+  workflow_dispatch: {}   # 都可以手動去 GitHub Actions 頁面撳掣即刻跑一次
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call Vercel scraper endpoint
+        run: |
+          curl -sf "${{ secrets.SCRAPER_URL }}" || echo "呼叫失敗,下次排程會再試"
