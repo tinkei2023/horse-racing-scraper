@@ -346,6 +346,10 @@ module.exports = async (req, res) => {
       let horsesInRace = 0;
       let oddsInRace = 0;
 
+      const currentHorseNumbers = runners
+        .filter(r => r.status !== 'Scratched')
+        .map(r => parseInt(r.no, 10));
+     
       for (const runner of runners) {
         if (runner.status === 'Scratched') continue;
 
@@ -397,6 +401,16 @@ module.exports = async (req, res) => {
         }
       }
 
+           // 清走呢場入面「而家已經唔喺出賽名單」嘅殘留馬匹紀錄
+      // (防止之前錯誤場數據殘留,同今次啱嘅數據疊埋一齊)
+      if (currentHorseNumbers.length > 0) {
+        await supabase
+          .from('horse_analysis')
+          .delete()
+          .eq('race_id', raceId)
+          .not('horse_number', 'in', `(${currentHorseNumbers.join(',')})`);
+      }
+     
       raceSummaries.push({
         race_number: race.no,
         status: 'processed',
