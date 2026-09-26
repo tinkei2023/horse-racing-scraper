@@ -1,0 +1,9 @@
+{
+  "name": "horse-racing-scraper",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "cheerio": "^1.0.0"
+  }
+}
