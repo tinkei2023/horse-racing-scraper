@@ -1,0 +1,12 @@
+{
+  "env": {
+    "SUPABASE_URL": "@supabase_url",
+    "SUPABASE_KEY": "@supabase_key"
+  },
+  "crons": [
+    {
+      "path": "/api/scraper",
+      "schedule": "0 6 * * 0,3,5"
+    }
+  ]
+}
