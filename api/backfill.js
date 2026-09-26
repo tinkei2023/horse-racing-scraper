@@ -39,6 +39,7 @@ function parseResultsHtml(html) {
   const raceHeaderLines = {};
   const placingsByRace = {};
   const dividendsByRace = {};
+  const debugTableHeaders = []; // 診斷用:記低搵到嘅每個 table 嘅 header 文字
 
   let currentRaceNo = null;
   let currentVenue = null;
@@ -51,6 +52,7 @@ function parseResultsHtml(html) {
     if (tag === 'table') {
       const headerCells = $el.find('tr').first().find('th,td').map((i, c) => $(c).text().trim()).get();
       const headerText = headerCells.join('|');
+      debugTableHeaders.push({ raceNo: currentRaceNo, headerText });
 
       if (headerText.includes('名次')) {
         const rows = [];
@@ -73,10 +75,12 @@ function parseResultsHtml(html) {
           if (pendingHeaderLine) raceHeaderLines[currentRaceNo] = pendingHeaderLine;
         }
       } else if (headerText.includes('彩池')) {
+        const rawRowsForDebug = [];
         const rows = [];
         let lastPoolType = null;
         $el.find('tr').slice(1).each((i, tr) => {
           const cells = $(tr).find('td').map((j, td) => $(td).text().trim()).get();
+          if (i < 5) rawRowsForDebug.push(cells);
           if (cells.length < 2) return;
           let poolType, combination, payoutRaw;
           if (cells.length >= 3 && cells[0]) {
@@ -92,6 +96,9 @@ function parseResultsHtml(html) {
             rows.push({ pool_type: poolType, combination, payout });
           }
         });
+        if (rows.length === 0) {
+          debugTableHeaders.push({ raceNo: currentRaceNo, headerText: 'DIVIDENDS_TABLE_ZERO_ROWS', rawRowsSample: rawRowsForDebug });
+        }
         if (currentRaceNo !== null && rows.length > 0) {
           dividendsByRace[currentRaceNo] = rows;
         }
@@ -102,7 +109,7 @@ function parseResultsHtml(html) {
     const directText = $el.contents().filter(function () { return this.type === 'text'; }).text().trim();
     if (!directText) return;
 
-    if (/^(沙田|跑馬地)$/.test(directText)) {
+    if (/^(沙田|跑馬地)[:：]?$/.test(directText)) {
       currentVenue = directText;
       return;
     }
@@ -148,7 +155,7 @@ function parseResultsHtml(html) {
     });
   }
 
-  return { venue: currentVenue, races };
+  return { venue: currentVenue, races, debugTableHeaders };
 }
 
 module.exports = async (req, res) => {
@@ -238,7 +245,8 @@ module.exports = async (req, res) => {
       date: dateStr,
       venue: parsed.venue,
       races_found: parsed.races.length,
-      races: summary
+      races: summary,
+      debug_table_headers: parsed.debugTableHeaders
     });
 
   } catch (err) {
