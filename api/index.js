@@ -254,6 +254,7 @@ module.exports = async (req, res) => {
     const { dateStr } = getHKDateInfo();
 
     // ===== 第 1 步: 用 activeMeetings 搵返真正本地場(ST/HV)嘅精確日期 =====
+    // (呢個 field 唔理 $date/$venueCode 參數,永遠準確,所以隨便帶個 dummy 值都得)
     const probeResult = await callHkjcGraphQL(horseQuery, { date: dateStr, venueCode: 'ST' });
 
     if (probeResult.errors) {
@@ -347,11 +348,11 @@ module.exports = async (req, res) => {
       let oddsInRace = 0;
 
       const currentHorseNumbers = runners
-        .filter(r => r.status !== 'Scratched')
+        .filter(r => r.status !== 'Scratched' && !r.standbyNo)
         .map(r => parseInt(r.no, 10));
-     
+
       for (const runner of runners) {
-        if (runner.status === 'Scratched') continue;
+        if (runner.status === 'Scratched' || runner.standbyNo) continue;
 
         const horseNumber = parseInt(runner.no, 10);
         const avgPlacing = calcAvgPlacing(runner.last6run);
@@ -401,7 +402,7 @@ module.exports = async (req, res) => {
         }
       }
 
-           // 清走呢場入面「而家已經唔喺出賽名單」嘅殘留馬匹紀錄
+      // 清走呢場入面「而家已經唔喺出賽名單」嘅殘留馬匹紀錄
       // (防止之前錯誤場數據殘留,同今次啱嘅數據疊埋一齊)
       if (currentHorseNumbers.length > 0) {
         await supabase
@@ -410,7 +411,7 @@ module.exports = async (req, res) => {
           .eq('race_id', raceId)
           .not('horse_number', 'in', `(${currentHorseNumbers.join(',')})`);
       }
-     
+
       raceSummaries.push({
         race_number: race.no,
         status: 'processed',
