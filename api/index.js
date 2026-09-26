@@ -203,6 +203,42 @@ query raceMeetings($date: String, $venueCode: String) {
 const VENUE_NAME = { ST: '沙田', HV: '跑馬地' };
 const LOCAL_VENUES = ['ST', 'HV'];
 
+// ⚠️ 呢條都係一個字都唔可以改,真正即時賠率(pmPools/oddsNodes)嘅白名單 query
+const horseOddsQuery = `
+query racing($date: String, $venueCode: String, $oddsTypes: [OddsType], $raceNo: Int) { raceMeetings(date: $date, venueCode: $venueCode) { pmPools(oddsTypes: $oddsTypes, raceNo: $raceNo) {
+ id
+ status
+ sellStatus
+ oddsType
+ lastUpdateTime
+ guarantee
+ minTicketCost
+ name_en
+ name_ch
+ leg {
+ number
+ races
+ }
+ cWinSelections {
+ composite
+ name_ch
+ name_en
+ starters
+ }
+ oddsNodes {
+ combString
+ oddsValue
+ hotFavourite
+ oddsDropValue
+ bankerOdds {
+ combString
+ oddsValue
+ }
+ }
+ }
+ }
+}`;
+
 function getHKDateInfo() {
   const now = new Date();
   const hkMs = now.getTime() + (8 * 60 - now.getTimezoneOffset()) * 60000;
@@ -247,6 +283,29 @@ function parseWinOdds(winOdds) {
   const v = parseFloat(winOdds);
   if (isNaN(v)) return null;
   return v;
+}
+
+// 攞返指定一場嘅真正即時獨贏賠率,回傳 Map<馬號, 賠率>(SCR/冇效數值會跳過)
+async function fetchRaceOdds(date, venueCode, raceNo) {
+  const result = await callHkjcGraphQL(horseOddsQuery, {
+    date, venueCode, oddsTypes: ['WIN'], raceNo
+  });
+
+  const map = new Map();
+  if (result.errors) return map;
+
+  const pools = (result.data && result.data.raceMeetings && result.data.raceMeetings[0] && result.data.raceMeetings[0].pmPools) || [];
+  const winPool = pools.find(p => p.oddsType === 'WIN');
+  if (!winPool || !winPool.oddsNodes) return map;
+
+  for (const node of winPool.oddsNodes) {
+    const horseNum = parseInt(node.combString, 10);
+    const odds = parseWinOdds(node.oddsValue);
+    if (!isNaN(horseNum) && odds !== null) {
+      map.set(horseNum, odds);
+    }
+  }
+  return map;
 }
 
 module.exports = async (req, res) => {
@@ -351,6 +410,14 @@ module.exports = async (req, res) => {
         .filter(r => r.status !== 'Scratched' && !r.standbyNo)
         .map(r => parseInt(r.no, 10));
 
+      // 攞返呢場真正嘅即時獨贏賠率(唔用 runner.winOdds,嗰個唔準確)
+      let oddsMap = new Map();
+      try {
+        oddsMap = await fetchRaceOdds(targetDate, targetVenue, race.no);
+      } catch (e) {
+        // 攞賠率失敗都唔緊要,馬匹資料照樣存,遲啲下次 run 再補
+      }
+
       for (const runner of runners) {
         if (runner.status === 'Scratched' || runner.standbyNo) continue;
 
@@ -387,7 +454,7 @@ module.exports = async (req, res) => {
         horsesInRace++;
         totalHorsesUpserted++;
 
-        const winOdds = parseWinOdds(runner.winOdds);
+        const winOdds = oddsMap.has(horseNumber) ? oddsMap.get(horseNumber) : null;
         if (winOdds !== null) {
           const { error: oddsErr } = await supabase
             .from('odds')
