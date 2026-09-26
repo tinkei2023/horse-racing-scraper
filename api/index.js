@@ -280,6 +280,10 @@ module.exports = async (req, res) => {
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
     const venueName = VENUE_NAME[venueCode] || venueCode;
+    // ⚠️ 用返 HKJC 真正回應嘅日期嚟標籤數據,唔可以靠自己估嘅 dateStr,
+    // 因為 HKJC 個 GraphQL 未必會嚴格跟我哋俾嘅 $date 篩選,佢可能會
+    // 直接返返個場地下一場真正嘅賽事(即使日期同我哋以為嘅唔一樣)。
+    const actualDate = meeting.date || dateStr;
 
     const raceSummaries = [];
     let totalHorsesUpserted = 0;
@@ -297,7 +301,7 @@ module.exports = async (req, res) => {
         .from('races')
         .upsert(
           {
-            race_date: dateStr,
+            race_date: actualDate,
             race_number: race.no,
             venue: venueName,
             distance: race.distance,
@@ -377,14 +381,15 @@ module.exports = async (req, res) => {
       });
     }
 
-    res.status(200).json({
+      res.status(200).json({
       status: 'success',
-      message: `已處理 ${dateStr} ${venueName} 場`,
+      message: `已處理 ${actualDate} ${venueName} 場`,
       queried_date: dateStr,
+      actual_meeting_date: actualDate,
+      date_mismatch_warning: actualDate !== dateStr
+        ? `注意: 你查詢嘅係 ${dateStr},但 HKJC 實際返返嚟嘅係 ${actualDate} 嗰場`
+        : null,
       queried_venue: venueName,
-      total_horses_upserted: totalHorsesUpserted,
-      total_odds_upserted: totalOddsUpserted,
-      races: raceSummaries
     });
 
   } catch (err) {
