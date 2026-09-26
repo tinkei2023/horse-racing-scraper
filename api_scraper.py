@@ -16,11 +16,8 @@ except ImportError:
 # ============================================
 # 環境變數
 # ============================================
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise ValueError("❌ 缺少環境變數: SUPABASE_URL 或 SUPABASE_KEY")
+SUPABASE_URL = "https://jwjtwezbhbtvzqrxrech.supabase.co"
+SUPABASE_KEY = "sb_publishable_yAXxo6A15U9Ox4XvrbnC4w__T9n9LDm"
 
 
 # ============================================
