@@ -1,0 +1,63 @@
+name: HKJC Historical Results Backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: '開始日期 (YYYY-MM-DD)'
+        required: true
+        default: '2025-09-01'
+      end_date:
+        description: '結束日期 (YYYY-MM-DD,包含)'
+        required: true
+        default: '2025-12-31'
+      delay_seconds:
+        description: '每次請求之間停幾多秒(避免太密集)'
+        required: false
+        default: '4'
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Backfill historical results day by day
+        run: |
+          START="${{ github.event.inputs.start_date }}"
+          END="${{ github.event.inputs.end_date }}"
+          DELAY="${{ github.event.inputs.delay_seconds }}"
+          BASE_URL="${{ secrets.SCRAPER_URL }}"
+          # SCRAPER_URL 呢個 secret 而家指緊 /api,呢度要換做 /api/backfill
+          BACKFILL_URL="${BASE_URL%/api}/api/backfill"
+
+          echo "由 $START 到 $END,逢星期三/六/日,每次停 ${DELAY}s"
+          echo "Backfill endpoint: $BACKFILL_URL"
+
+          CURRENT="$START"
+          TOTAL=0
+          SUCCESS=0
+          EMPTY=0
+          FAILED=0
+
+          while [ "$(date -d "$CURRENT" +%Y%m%d)" -le "$(date -d "$END" +%Y%m%d)" ]; do
+            DOW=$(date -d "$CURRENT" +%u)   # 1=Mon ... 3=Wed 6=Sat 7=Sun
+            if [ "$DOW" = "3" ] || [ "$DOW" = "6" ] || [ "$DOW" = "7" ]; then
+              TOTAL=$((TOTAL+1))
+              echo "----- $CURRENT (星期 $DOW) -----"
+              RESP=$(curl -sf "${BACKFILL_URL}?date=${CURRENT}" || echo '{"status":"http_error"}')
+              STATUS=$(echo "$RESP" | grep -o '"status"[^,}]*' | head -1)
+              echo "$STATUS"
+              case "$STATUS" in
+                *success*) SUCCESS=$((SUCCESS+1)) ;;
+                *no_races_found*) EMPTY=$((EMPTY+1)) ;;
+                *) FAILED=$((FAILED+1)) ;;
+              esac
+              sleep "$DELAY"
+            fi
+            CURRENT=$(date -d "$CURRENT + 1 day" +%Y-%m-%d)
+          done
+
+          echo "===== 完成 ====="
+          echo "總共檢查: $TOTAL 日"
+          echo "成功: $SUCCESS"
+          echo "冇賽事: $EMPTY"
+          echo "失敗: $FAILED"
