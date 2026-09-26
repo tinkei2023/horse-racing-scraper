@@ -420,11 +420,39 @@ module.exports = async (req, res) => {
         // 攞賠率失敗都唔緊要,馬匹資料照樣存,遲啲下次 run 再補
       }
 
-        for (const runner of runners) {
+      // 攞返「呢個場地+途程」嘅歷史檔位勝率,用嚟計 draw_score(取代寫死嘅中性值5)
+      const drawScoreMap = new Map(); // draw -> 1~10 分
+      try {
+        const { data: drawStats } = await supabase
+          .from('stat_draw')
+          .select('draw,win_pct')
+          .eq('venue', venueName)
+          .eq('distance', race.distance);
+
+        if (drawStats && drawStats.length > 1) {
+          const pcts = drawStats.map(d => d.win_pct);
+          const minPct = Math.min(...pcts);
+          const maxPct = Math.max(...pcts);
+          for (const d of drawStats) {
+            const score = maxPct > minPct
+              ? 1 + 9 * (d.win_pct - minPct) / (maxPct - minPct)
+              : 5;
+            drawScoreMap.set(d.draw, Math.round(score * 10) / 10);
+          }
+        }
+      } catch (e) {
+        // 攞唔到歷史統計都唔緊要,下面會 fallback 做中性值 5
+      }
+
+      for (const runner of runners) {
         if (!isRealRunner(runner)) continue;
 
         const horseNumber = parseInt(runner.no, 10);
         const avgPlacing = calcAvgPlacing(runner.last6run);
+        const drawNumber = parseInt(runner.barrierDrawNumber, 10) || null;
+        const drawScore = drawNumber !== null && drawScoreMap.has(drawNumber)
+          ? drawScoreMap.get(drawNumber)
+          : 5; // 冇歷史數據就 fallback 中性值
 
         const { data: horseRow, error: horseErr } = await supabase
           .from('horse_analysis')
@@ -435,14 +463,14 @@ module.exports = async (req, res) => {
               horse_name: runner.name_ch || runner.name_en,
               jockey: runner.jockey ? (runner.jockey.name_ch || runner.jockey.name_en) : '',
               trainer: runner.trainer ? (runner.trainer.name_ch || runner.trainer.name_en) : '',
-              draw: parseInt(runner.barrierDrawNumber, 10) || null,
+              draw: drawNumber,
               weight: parseInt(runner.handicapWeight, 10) || null,
               avg_placing: avgPlacing,
               avg_margin: 2,
               speed_score: 5,
               distance_score: 5,
               jockey_trainer_score: 5,
-              draw_score: 5,
+              draw_score: drawScore,
               workout_score: 5,
               composite_score: null,
               estimated_prob: null
@@ -478,10 +506,15 @@ module.exports = async (req, res) => {
           .from('horse_analysis')
           .delete()
           .eq('race_id', raceId)
-          .not('horse_number', 'in', `(${currentHorseNumbers.join(',')})`)
-          .is('horse_number', null);
-       
+          .not('horse_number', 'in', `(${currentHorseNumbers.join(',')})`);
       }
+      // horse_number 係 NULL 嘅行(格式怪異、parseInt 唔到嘅後備馬)一律清走,
+      // 因為 SQL 嘅 "NOT IN" 對 NULL 值捕捉唔到,上面嗰句唔會刪走呢啲
+      await supabase
+        .from('horse_analysis')
+        .delete()
+        .eq('race_id', raceId)
+        .is('horse_number', null);
 
       raceSummaries.push({
         race_number: race.no,
