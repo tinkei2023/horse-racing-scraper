@@ -277,9 +277,24 @@ module.exports = async (req, res) => {
       });
       return;
     }
-
+        // ⚠️ 嚴格驗證: HKJC 個 GraphQL 未必會跟返我哋要求嘅 venueCode 篩選,
+    // 見過佢會將其他場(例如海外轉播場)都塞返嚟。所以呢度必須核對
+    // meeting.venueCode 係咪真係我哋想要嘅 ST/HV,唔啱就即刻停,
+    // 唔會將錯誤場數據誤存做「沙田」或「跑馬地」。
+    if (meeting.venueCode !== venueCode) {
+      res.status(200).json({
+        status: 'venue_mismatch',
+        message: `攞返嚟嘅場地(${meeting.venueCode})同要求嘅(${venueCode})唔一致,已停止寫入,避免存錯數據`,
+        queried_date: dateStr,
+        queried_venue: venueCode,
+        actual_returned_venue: meeting.venueCode,
+        actual_returned_date: meeting.date,
+        active_meetings_summary: gqlResult.data ? gqlResult.data.activeMeetings : null
+      });
+      return;
+    }
     const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-    const venueName = VENUE_NAME[venueCode] || venueCode;
+    const venueName = VENUE_NAME[meeting.venueCode] || meeting.venueCode;
     // ⚠️ 用返 HKJC 真正回應嘅日期嚟標籤數據,唔可以靠自己估嘅 dateStr,
     // 因為 HKJC 個 GraphQL 未必會嚴格跟我哋俾嘅 $date 篩選,佢可能會
     // 直接返返個場地下一場真正嘅賽事(即使日期同我哋以為嘅唔一樣)。
