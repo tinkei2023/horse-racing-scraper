@@ -479,6 +479,7 @@ module.exports = async (req, res) => {
         // 攞唔到歷史統計都唔緊要,下面會 fallback 做中性值 5
       }
 
+      let firstHorseError = null;
       for (const runner of runners) {
         if (!isRealRunner(runner)) continue;
 
@@ -521,7 +522,10 @@ module.exports = async (req, res) => {
           .select()
           .single();
 
-        if (horseErr) continue;
+        if (horseErr) {
+          if (!firstHorseError) firstHorseError = horseErr.message;
+          continue;
+        }
         horsesInRace++;
         totalHorsesUpserted++;
 
@@ -566,6 +570,7 @@ module.exports = async (req, res) => {
         raw_first_runner_standbyNo: runners[0] ? runners[0].standbyNo : null,
         raw_first_runner_no: runners[0] ? runners[0].no : null,
         horses: horsesInRace,
+        first_horse_error: firstHorseError,
         odds_available: oddsInRace,
         odds_pending: horsesInRace - oddsInRace
       });
