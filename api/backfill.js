@@ -50,11 +50,13 @@ function parseResultsHtml(html) {
     const tag = el.tagName ? el.tagName.toLowerCase() : '';
 
     if (tag === 'table') {
-      const headerCells = $el.find('tr').first().find('th,td').map((i, c) => $(c).text().trim()).get();
-      const headerText = headerCells.join('|');
-      debugTableHeaders.push({ raceNo: currentRaceNo, headerText });
+      const trs = $el.find('tr');
+      const row0Text = trs.eq(0).find('th,td').map((i, c) => $(c).text().trim()).get().join('|');
+      const row1Text = trs.length > 1 ? trs.eq(1).find('th,td').map((i, c) => $(c).text().trim()).get().join('|') : '';
+      debugTableHeaders.push({ raceNo: currentRaceNo, row0Text, row1Text });
 
-      if (headerText.includes('名次')) {
+      if (row0Text.includes('名次')) {
+        const headerText = row0Text;
         const rows = [];
         $el.find('tr').slice(1).each((i, tr) => {
           const cells = $(tr).find('td').map((j, td) => $(td).text().trim()).get();
@@ -74,11 +76,14 @@ function parseResultsHtml(html) {
           placingsByRace[currentRaceNo] = rows;
           if (pendingHeaderLine) raceHeaderLines[currentRaceNo] = pendingHeaderLine;
         }
-      } else if (headerText.includes('彩池')) {
+      } else if (row0Text.includes('彩池') || row1Text.includes('彩池')) {
+        // "派彩" 呢個大標題可能自己佔咗第一行,真正欄位名(彩池/勝出組合/派彩)喺第二行,
+        // 所以要判斷跳幾多行先開始讀數據
+        const dataStartIdx = row0Text.includes('彩池') ? 1 : 2;
         const rawRowsForDebug = [];
         const rows = [];
         let lastPoolType = null;
-        $el.find('tr').slice(1).each((i, tr) => {
+        $el.find('tr').slice(dataStartIdx).each((i, tr) => {
           const cells = $(tr).find('td').map((j, td) => $(td).text().trim()).get();
           if (i < 5) rawRowsForDebug.push(cells);
           if (cells.length < 2) return;
@@ -96,9 +101,6 @@ function parseResultsHtml(html) {
             rows.push({ pool_type: poolType, combination, payout });
           }
         });
-        if (rows.length === 0) {
-          debugTableHeaders.push({ raceNo: currentRaceNo, headerText: 'DIVIDENDS_TABLE_ZERO_ROWS', rawRowsSample: rawRowsForDebug });
-        }
         if (currentRaceNo !== null && rows.length > 0) {
           dividendsByRace[currentRaceNo] = rows;
         }
@@ -110,7 +112,7 @@ function parseResultsHtml(html) {
     if (!directText) return;
 
     if (/^(沙田|跑馬地)[:：]?$/.test(directText)) {
-      currentVenue = directText;
+      currentVenue = directText.replace(/[:：]$/, '');
       return;
     }
 
