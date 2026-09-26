@@ -374,6 +374,35 @@ module.exports = async (req, res) => {
     let totalHorsesUpserted = 0;
     let totalOddsUpserted = 0;
 
+    // 騎師/練馬師分數同場地有關、同途程無關,喺 race loop 外面攞一次就夠,唔使每場重問
+    const jockeyScoreMap = new Map();
+    const trainerScoreMap = new Map();
+    try {
+      const [{ data: jockeyStats }, { data: trainerStats }] = await Promise.all([
+        supabase.from('stat_jockey_venue').select('jockey,win_pct').eq('venue', venueName),
+        supabase.from('stat_trainer_venue').select('trainer,win_pct').eq('venue', venueName)
+      ]);
+
+      if (jockeyStats && jockeyStats.length > 1) {
+        const pcts = jockeyStats.map(j => j.win_pct);
+        const minPct = Math.min(...pcts), maxPct = Math.max(...pcts);
+        for (const j of jockeyStats) {
+          const score = maxPct > minPct ? 1 + 9 * (j.win_pct - minPct) / (maxPct - minPct) : 5;
+          jockeyScoreMap.set(j.jockey, Math.round(score * 10) / 10);
+        }
+      }
+      if (trainerStats && trainerStats.length > 1) {
+        const pcts = trainerStats.map(t => t.win_pct);
+        const minPct = Math.min(...pcts), maxPct = Math.max(...pcts);
+        for (const t of trainerStats) {
+          const score = maxPct > minPct ? 1 + 9 * (t.win_pct - minPct) / (maxPct - minPct) : 5;
+          trainerScoreMap.set(t.trainer, Math.round(score * 10) / 10);
+        }
+      }
+    } catch (e) {
+      // 攞唔到就下面 fallback 中性值 5
+    }
+
     for (const race of meeting.races || []) {
       const runners = race.runners || [];
 
@@ -454,6 +483,12 @@ module.exports = async (req, res) => {
           ? drawScoreMap.get(drawNumber)
           : 5; // 冇歷史數據就 fallback 中性值
 
+        const jockeyName = runner.jockey ? (runner.jockey.name_ch || runner.jockey.name_en) : '';
+        const trainerName = runner.trainer ? (runner.trainer.name_ch || runner.trainer.name_en) : '';
+        const jScore = jockeyScoreMap.has(jockeyName) ? jockeyScoreMap.get(jockeyName) : 5;
+        const tScore = trainerScoreMap.has(trainerName) ? trainerScoreMap.get(trainerName) : 5;
+        const jockeyTrainerScore = Math.round(((jScore + tScore) / 2) * 10) / 10;
+
         const { data: horseRow, error: horseErr } = await supabase
           .from('horse_analysis')
           .upsert(
@@ -461,15 +496,15 @@ module.exports = async (req, res) => {
               race_id: raceId,
               horse_number: horseNumber,
               horse_name: runner.name_ch || runner.name_en,
-              jockey: runner.jockey ? (runner.jockey.name_ch || runner.jockey.name_en) : '',
-              trainer: runner.trainer ? (runner.trainer.name_ch || runner.trainer.name_en) : '',
+              jockey: jockeyName,
+              trainer: trainerName,
               draw: drawNumber,
               weight: parseInt(runner.handicapWeight, 10) || null,
               avg_placing: avgPlacing,
               avg_margin: 2,
               speed_score: 5,
               distance_score: 5,
-              jockey_trainer_score: 5,
+              jockey_trainer_score: jockeyTrainerScore,
               draw_score: drawScore,
               workout_score: 5,
               composite_score: null,
