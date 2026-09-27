@@ -16,10 +16,68 @@
  */
 
 const { createClient } = require('@supabase/supabase-js');
+const cheerio = require('cheerio');
 
 const GRAPHQL_URL = "https://info.cld.hkjc.com/graphql/base/";
+const DRAW_STATS_URL = "https://racing.hkjc.com/zh-hk/local/information/draw";
 const SUPABASE_URL = "https://jwjtwezbhbtvzqrxrech.supabase.co";
 const SUPABASE_KEY = "sb_publishable_yAXxo6A15U9Ox4XvrbnC4w__T9n9LDm";
+
+// 官方「檔位統計」頁(24/25季度至今,樣本量遠大過我哋自己 backfill 嗰批),
+// 呢版會自動對準「聽日/下一個賽馬日」,一次過列晒成日所有場嘅檔位統計,
+// 唔使我哋自己儲歷史賽果去計。回傳 Map<race_no, Map<draw, win_pct>>
+async function fetchDrawStatsAllRaces() {
+  const resp = await fetch(DRAW_STATS_URL, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
+    }
+  });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status} 攞唔到官方檔位統計頁`);
+  const html = await resp.text();
+  const $ = cheerio.load(html);
+
+  const statsByRace = new Map();
+  let currentRaceNo = null;
+
+  $('body *').each((_, el) => {
+    const $el = $(el);
+    const tag = el.tagName ? el.tagName.toLowerCase() : '';
+
+    if (tag === 'table') {
+      const headerCells = $el.find('tr').first().find('th,td').map((i, c) => $(c).text().trim()).get();
+      const headerText = headerCells.join('|');
+
+      if (headerText.includes('檔位') && headerText.includes('出賽')) {
+        const map = new Map();
+        $el.find('tr').slice(1).each((i, tr) => {
+          const cells = $(tr).find('td').map((j, td) => $(td).text().trim()).get();
+          // 欄位順序: 檔位, 出賽次數, 冠, 亞, 季, 殿, 勝出率%, 入Q率%, 上名率%, 前4名率%
+          if (cells.length >= 10 && /^\d+$/.test(cells[0])) {
+            const draw = parseInt(cells[0], 10);
+            const winPct = parseFloat(cells[6]);
+            if (!isNaN(draw) && !isNaN(winPct)) {
+              map.set(draw, winPct);
+            }
+          }
+        });
+        if (currentRaceNo !== null && map.size > 0) {
+          statsByRace.set(currentRaceNo, map);
+        }
+      }
+      return;
+    }
+
+    const directText = $el.contents().filter(function () { return this.type === 'text'; }).text().trim();
+    if (!directText) return;
+
+    const m = directText.match(/^第\s*(\d+)\s*場/);
+    if (m) {
+      currentRaceNo = parseInt(m[1], 10);
+    }
+  });
+
+  return statsByRace;
+}
 
 // ⚠️ 呢條 query 一個字都唔可以改,原封不動抄自 HKJC 官方前端白名單
 const horseQuery = `
@@ -409,6 +467,16 @@ module.exports = async (req, res) => {
       jockeyStatsDebug.error = e.message;
     }
 
+    // 攞返官方檔位統計(一次過攞晒成日所有場,唔使再逐場問我哋自己個 stat_draw view)
+    let drawStatsAllRaces = new Map();
+    let drawStatsDebug = { races_found: 0, error: null };
+    try {
+      drawStatsAllRaces = await fetchDrawStatsAllRaces();
+      drawStatsDebug.races_found = drawStatsAllRaces.size;
+    } catch (e) {
+      drawStatsDebug.error = e.message;
+    }
+
     for (const race of meeting.races || []) {
       const runners = race.runners || [];
 
@@ -455,28 +523,19 @@ module.exports = async (req, res) => {
         // 攞賠率失敗都唔緊要,馬匹資料照樣存,遲啲下次 run 再補
       }
 
-      // 攞返「呢個場地+途程」嘅歷史檔位勝率,用嚟計 draw_score(取代寫死嘅中性值5)
+      // 用返官方檔位統計(呢場對應嘅 race.no),換做 1~10 分(取代寫死嘅中性值5)
       const drawScoreMap = new Map(); // draw -> 1~10 分
-      try {
-        const { data: drawStats } = await supabase
-          .from('stat_draw')
-          .select('draw,win_pct')
-          .eq('venue', venueName)
-          .eq('distance', race.distance);
-
-        if (drawStats && drawStats.length > 1) {
-          const pcts = drawStats.map(d => d.win_pct);
-          const minPct = Math.min(...pcts);
-          const maxPct = Math.max(...pcts);
-          for (const d of drawStats) {
-            const score = maxPct > minPct
-              ? 1 + 9 * (d.win_pct - minPct) / (maxPct - minPct)
-              : 5;
-            drawScoreMap.set(d.draw, Math.round(score * 10) / 10);
-          }
+      const drawStatsForRace = drawStatsAllRaces.get(race.no);
+      if (drawStatsForRace && drawStatsForRace.size > 1) {
+        const pcts = [...drawStatsForRace.values()];
+        const minPct = Math.min(...pcts);
+        const maxPct = Math.max(...pcts);
+        for (const [draw, winPct] of drawStatsForRace.entries()) {
+          const score = maxPct > minPct
+            ? 1 + 9 * (winPct - minPct) / (maxPct - minPct)
+            : 5;
+          drawScoreMap.set(draw, Math.round(score * 10) / 10);
         }
-      } catch (e) {
-        // 攞唔到歷史統計都唔緊要,下面會 fallback 做中性值 5
       }
 
       let firstHorseError = null;
@@ -587,6 +646,7 @@ module.exports = async (req, res) => {
       total_odds_upserted: totalOddsUpserted,
       jockey_stats_debug: jockeyStatsDebug,
       trainer_stats_debug: trainerStatsDebug,
+      draw_stats_debug: drawStatsDebug,
       races: raceSummaries
     });
 
