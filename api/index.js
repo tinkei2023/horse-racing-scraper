@@ -432,15 +432,16 @@ module.exports = async (req, res) => {
     let totalHorsesUpserted = 0;
     let totalOddsUpserted = 0;
 
-    // 騎師/練馬師分數同場地有關、同途程無關,喺 race loop 外面攞一次就夠,唔使每場重問
+    // 騎師/練馬師分數:改用官方 season 數據(今季+上季合併,樣本遠大過我哋自己 backfill),
+    // 呢個表要人手隔一排(例如每個月)用瀏覽器重新攞更新一次,唔會自動更新
     const jockeyScoreMap = new Map();
     const trainerScoreMap = new Map();
     let jockeyStatsDebug = { count: 0, error: null };
     let trainerStatsDebug = { count: 0, error: null };
     try {
       const [jockeyResult, trainerResult] = await Promise.all([
-        supabase.from('stat_jockey_venue').select('jockey,win_pct').eq('venue', venueName),
-        supabase.from('stat_trainer_venue').select('trainer,win_pct').eq('venue', venueName)
+        supabase.from('official_jockey_stats').select('jockey,win_pct'),
+        supabase.from('official_trainer_stats').select('trainer,win_pct')
       ]);
       const jockeyStats = jockeyResult.data;
       const trainerStats = trainerResult.data;
