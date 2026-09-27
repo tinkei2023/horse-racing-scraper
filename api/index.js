@@ -545,37 +545,45 @@ module.exports = async (req, res) => {
         const horseNumber = parseInt(runner.no, 10);
         const avgPlacing = calcAvgPlacing(runner.last6run);
         const drawNumber = parseInt(runner.barrierDrawNumber, 10) || null;
-        const drawScore = drawNumber !== null && drawScoreMap.has(drawNumber)
-          ? drawScoreMap.get(drawNumber)
-          : 5; // 冇歷史數據就 fallback 中性值
+        // 攞唔到就唔好寫呢個欄位,等之前(如果有)已經存低嘅好數值原封不動保留,
+        // 唔好用中性值 5 蓋咗轉頭 —— 淨係第一次插入(從未有過紀錄)先會冇得留低舊值
+        const hasDrawScore = drawNumber !== null && drawScoreMap.has(drawNumber);
+        const drawScore = hasDrawScore ? drawScoreMap.get(drawNumber) : undefined;
 
         const jockeyName = runner.jockey ? (runner.jockey.name_ch || runner.jockey.name_en) : '';
         const trainerName = runner.trainer ? (runner.trainer.name_ch || runner.trainer.name_en) : '';
+        const hasJockeyTrainerScore = jockeyScoreMap.size > 0 || trainerScoreMap.size > 0;
         const jScore = jockeyScoreMap.has(jockeyName) ? jockeyScoreMap.get(jockeyName) : 5;
         const tScore = trainerScoreMap.has(trainerName) ? trainerScoreMap.get(trainerName) : 5;
-        const jockeyTrainerScore = Math.round(((jScore + tScore) / 2) * 10) / 10;
+        const jockeyTrainerScore = hasJockeyTrainerScore
+          ? Math.round(((jScore + tScore) / 2) * 10) / 10
+          : undefined;
+
+        const horsePayload = {
+          race_id: raceId,
+          horse_number: horseNumber,
+          horse_name: runner.name_ch || runner.name_en,
+          jockey: jockeyName,
+          trainer: trainerName,
+          draw: drawNumber,
+          weight: parseInt(runner.handicapWeight, 10) || null,
+          avg_placing: avgPlacing,
+          avg_margin: 2,
+          speed_score: 5,
+          distance_score: 5,
+          workout_score: 5,
+          composite_score: null,
+          estimated_prob: null
+        };
+        // undefined 嘅欄位唔會俾 supabase-js 帶落去(即係唔會喺 upsert 提及呢個 column),
+        // 舊值就會保留唔變;只有真係攞到新數據先會覆寫
+        if (drawScore !== undefined) horsePayload.draw_score = drawScore;
+        if (jockeyTrainerScore !== undefined) horsePayload.jockey_trainer_score = jockeyTrainerScore;
 
         const { data: horseRow, error: horseErr } = await supabase
           .from('horse_analysis')
           .upsert(
-            {
-              race_id: raceId,
-              horse_number: horseNumber,
-              horse_name: runner.name_ch || runner.name_en,
-              jockey: jockeyName,
-              trainer: trainerName,
-              draw: drawNumber,
-              weight: parseInt(runner.handicapWeight, 10) || null,
-              avg_placing: avgPlacing,
-              avg_margin: 2,
-              speed_score: 5,
-              distance_score: 5,
-              jockey_trainer_score: jockeyTrainerScore,
-              draw_score: drawScore,
-              workout_score: 5,
-              composite_score: null,
-              estimated_prob: null
-            },
+            horsePayload,
             { onConflict: 'race_id,horse_number' }
           )
           .select()
